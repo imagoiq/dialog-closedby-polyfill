@@ -154,9 +154,16 @@ function isSupported() {
   if (typeof HTMLDialogElement === "undefined" || typeof HTMLDialogElement.prototype !== "object" || !("closedBy" in HTMLDialogElement.prototype)) {
     return false;
   }
-  const testDialog = document.createElement("dialog");
-  testDialog.setAttribute("closedby", "none");
-  return testDialog.closedBy === "none";
+  if (typeof document === "undefined" || typeof document.createElement !== "function") {
+    return false;
+  }
+  try {
+    const testDialog = document.createElement("dialog");
+    testDialog.setAttribute("closedby", "none");
+    return testDialog.closedBy === "none";
+  } catch {
+    return false;
+  }
 }
 function isPolyfilled() {
   return polyfilled;
