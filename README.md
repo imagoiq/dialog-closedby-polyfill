@@ -179,7 +179,7 @@ This polyfill works in all browsers that support the native `<dialog>` element.
 
 - Chrome 134+
 - Safari: Not implemented yet
-- Firefox: Not implemented yet
+- Firefox: 141+
 - Edge: 134+
 
 **Dialog element support (required for polyfill):**
@@ -229,6 +229,18 @@ import { apply } from "dialog-closedby-polyfill";
 apply(); // Apply the polyfill
 ```
 
+#### `teardown(): void`
+
+Tears down the polyfill, removing all event listeners and observers. Useful for cleanup in tests or when dynamically unloading the polyfill.
+
+```javascript
+import { teardown } from "dialog-closedby-polyfill";
+
+teardown(); // Remove all listeners and observers
+```
+
+> **Note**: This does NOT restore the original `showModal`, `show`, or `closedBy` implementations on the prototype. It only cleans up observers and listeners.
+
 ## TypeScript Support
 
 TypeScript definitions are included. The polyfill extends the `HTMLDialogElement` interface:
@@ -243,13 +255,13 @@ interface HTMLDialogElement {
 
 The polyfill works by:
 
-1. **Extending HTMLDialogElement**: Adds the `closedby` property to dialog elements
-1. **Intercepting `showModal()`**: Sets up event listeners when a modal dialog is opened
+1. **Extending HTMLDialogElement**: Adds the `closedBy` property to dialog elements
+1. **Intercepting `showModal()` and `show()`**: Sets up event listeners when a dialog is opened
 1. **Handling Events**:
    - `keydown` event for ESC key detection
    - `click` event on the dialog for backdrop clicks
-   - `cancel` event prevention based on `closedby` value
-1. **Observing Changes**: Uses MutationObserver to watch for attribute changes
+   - `close` event for cleanup
+1. **Observing Changes**: Uses MutationObserver to watch for `closedby` attribute additions
 1. **Cleanup**: Removes event listeners when dialog is closed
 
 ## Differences from Native Implementation
@@ -295,6 +307,40 @@ Declarative `command/commandfor` attributes to provide dialog button operations 
   <button type="button" commandfor="my-dialog" command="close">Close</button>
 </dialog>
 ```
+
+## Release Notes
+
+### v1.3.0
+
+- **New**: `teardown()` function to clean up observers and event listeners
+- **New**: Support for modeless dialogs (`show()` method)
+- **New**: Case-insensitive `closedby` attribute handling
+- **Improved**: Internal architecture refactoring
+  - Lazy registration for escape handler
+  - Prevent duplicate observers for the same root
+  - Handle `DOMContentLoaded` for scripts in `<head>`
+
+### v1.2.0
+
+- **Fixed**: Prevent immediate close when reopening dialog after form submission
+  - Added `close` event listener to ensure cleanup regardless of how the dialog was closed
+  - Added `openedAt` timestamp to track when dialog was opened
+  - Use `event.timeStamp` comparison to ignore clicks from before dialog opened
+
+### v1.1.0
+
+- **Fixed**: Using ESC key no longer exits fullscreen mode in Safari/Firefox
+- **Fixed**: Dialog now closes on backdrop click even when `::backdrop` is set to `display: none`
+- **Fixed**: Safari 26.2 false positive detection
+  - Safari 26.2 exposes `closedBy` on `HTMLDialogElement.prototype` but the implementation is incomplete
+  - Changed `isSupported()` to use behavioral test instead of property existence check
+
+### v1.0.0
+
+- Initial release
+- Implements `closedby` attribute polyfill for `<dialog>` elements
+- Three closing modes: `any`, `closerequest`, and `none`
+- TypeScript support included
 
 ## Related Links
 
