@@ -9,13 +9,31 @@ const dialogStates = new WeakMap<HTMLDialogElement, DialogListeners>();
 
 /**
  * Normalizes the value of the `closedby` attribute.
+ * Case-insensitive to align with HTML attribute behavior.
  *
  * @param dialog - The dialog whose attribute is inspected.
  * @returns `"any"`, `"closerequest"`, or `"none"`.
  */
 function getClosedByValue(dialog: HTMLDialogElement): ClosedBy {
-  const raw = dialog.getAttribute("closedby");
+  const raw = dialog.getAttribute("closedby")?.toLowerCase();
   return raw === "closerequest" || raw === "none" ? raw : "any";
+}
+
+/**
+ * Checks if a click at the given coordinates is inside the dialog's bounding rect.
+ *
+ * @param dialog - The dialog element to check against.
+ * @param x - The clientX coordinate of the click.
+ * @param y - The clientY coordinate of the click.
+ * @returns `true` if the click is inside the dialog, `false` otherwise.
+ */
+function isClickInsideDialog(
+  dialog: HTMLDialogElement,
+  x: number,
+  y: number
+): boolean {
+  const rect = dialog.getBoundingClientRect();
+  return rect.top < y && y < rect.bottom && rect.left < x && x < rect.right;
 }
 
 /**
@@ -33,8 +51,19 @@ function getClosedByValue(dialog: HTMLDialogElement): ClosedBy {
  * @param dialog - Dialog candidate.
  */
 function isTopMost(dialog: HTMLDialogElement): boolean {
-  const stack = Array.from(activeDialogs);
-  return stack[stack.length - 1] === dialog;
+  return getTopMostDialog() === dialog;
+}
+
+/**
+ * Returns the top-most dialog in the stack, or `undefined` if empty.
+ * Iterates through the Set to find the last element without creating an array.
+ */
+function getTopMostDialog(): HTMLDialogElement | undefined {
+  let last: HTMLDialogElement | undefined;
+  for (const dialog of activeDialogs) {
+    last = dialog;
+  }
+  return last;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -44,55 +73,68 @@ function isTopMost(dialog: HTMLDialogElement): boolean {
 /** Set of currently open modal dialogs that define `closedby`. */
 const activeDialogs = new Set<HTMLDialogElement>();
 
+/** Tracks whether the escape handler has been registered. */
+let escapeHandlerRegistered = false;
+
 /**
  * Global `keydown` handler attached **once** to <kbd>document</kbd> to mirror
  * UA behavior for the *Escape* key. When multiple modal dialogs are stacked
  * (custom UI), only the topmost (most recently opened) dialog is processed
  * to maintain proper modal behavior.
  *
- * @param event - The keyboard event to handle
+ * This handler works in coordination with the `cancel` event handler:
+ * - For `closedBy="none"`: preventDefault here to stop the browser from
+ *   firing the cancel event entirely.
+ * - For `closedBy="any"` or `closedBy="closerequest"`: let the browser
+ *   fire the cancel event, which will close the dialog.
  *
- * @remarks
- * This implementation processes dialogs in reverse order of their addition
- * to ensure that only the topmost dialog in the stack is affected by the
- * Escape key. This follows standard modal dialog UX patterns where only
- * the active/focused dialog should respond to dismissal actions.
+ * @param event - The keyboard event to handle
  */
 function documentEscapeHandler(event: KeyboardEvent): void {
   if (event.key !== "Escape" || activeDialogs.size === 0) return;
 
-  let shouldPreventDefault = false;
-  let hasClosableDialog = false;
+  const topDialog = getTopMostDialog();
+  if (!topDialog) return;
 
-  // Process dialogs in reverse order (most recently added first)
-  // to handle the topmost dialog in the stack
-  const dialogsArray = Array.from(activeDialogs).reverse();
+  const closedBy = getClosedByValue(topDialog);
 
-  for (const dialog of dialogsArray) {
-    const closedBy = getClosedByValue(dialog);
-
-    if (closedBy === "none") {
-      // Dialog prevents closure - stop processing and prevent default
-      shouldPreventDefault = true;
-      break;
-    }
-
-    if (closedBy === "any" || closedBy === "closerequest") {
-      // Close only the topmost closable dialog and stop processing
-      dialog.close();
-      hasClosableDialog = true;
-      break;
-    }
-  }
-
-  // Prevent default browser behavior (like exiting fullscreen) when any dialog
-  // handles the ESC key, either by preventing closure or by closing the dialog
-  if (shouldPreventDefault || hasClosableDialog) {
+  // For closedBy="none", prevent the ESC key from triggering cancel event
+  if (closedBy === "none") {
     event.preventDefault();
   }
+  // For "any" and "closerequest", let the browser handle ESC naturally
+  // (it will fire a cancel event, which we don't preventDefault)
 }
 
-document.addEventListener("keydown", documentEscapeHandler);
+/**
+ * Registers the global escape key handler. This is called once during
+ * polyfill initialization to ensure the handler is only added when needed.
+ */
+export function registerEscapeHandler(): void {
+  if (escapeHandlerRegistered) return;
+  document.addEventListener("keydown", documentEscapeHandler);
+  escapeHandlerRegistered = true;
+}
+
+/**
+ * Unregisters the global escape key handler. This is called during
+ * polyfill teardown to clean up event listeners.
+ */
+export function unregisterEscapeHandler(): void {
+  if (!escapeHandlerRegistered) return;
+  document.removeEventListener("keydown", documentEscapeHandler);
+  escapeHandlerRegistered = false;
+}
+
+/**
+ * Detaches all currently tracked dialogs. This is called during
+ * polyfill teardown to clean up all dialog listeners.
+ */
+export function detachAllDialogs(): void {
+  // Create a copy since detachDialog modifies activeDialogs
+  const dialogs = Array.from(activeDialogs);
+  dialogs.forEach(detachDialog);
+}
 
 /* -------------------------------------------------------------------------- */
 /* Light-dismiss handler for hidden backdrops                                 */
@@ -129,12 +171,9 @@ function createLightDismissHandler(dialog: HTMLDialogElement) {
       return;
     }
 
-    const rect = dialog.getBoundingClientRect();
-    const { clientX: x, clientY: y } = event;
-    const inside =
-      rect.top <= y && y <= rect.bottom && rect.left <= x && x <= rect.right;
-
-    if (!inside) dialog.close();
+    if (!isClickInsideDialog(dialog, event.clientX, event.clientY)) {
+      dialog.close();
+    }
   };
 }
 
@@ -158,14 +197,9 @@ function createClickHandler(dialog: HTMLDialogElement) {
     if (event.target !== dialog) return;
     if (getClosedByValue(dialog) !== "any") return;
 
-    const rect = dialog.getBoundingClientRect();
-    const inside =
-      rect.top < event.clientY &&
-      event.clientY < rect.bottom &&
-      rect.left < event.clientX &&
-      event.clientX < rect.right;
-
-    if (!inside) dialog.close();
+    if (!isClickInsideDialog(dialog, event.clientX, event.clientY)) {
+      dialog.close();
+    }
   };
 }
 
@@ -176,7 +210,11 @@ function createClickHandler(dialog: HTMLDialogElement) {
  */
 function createCancelHandler(dialog: HTMLDialogElement) {
   return function handleCancel(event: Event): void {
-    if (getClosedByValue(dialog) === "none") event.preventDefault();
+    // For closedBy="none", prevent the dialog from closing
+    // For "any" and "closerequest", allow the default close behavior
+    if (getClosedByValue(dialog) === "none") {
+      event.preventDefault();
+    }
   };
 }
 
@@ -191,7 +229,7 @@ function createCancelHandler(dialog: HTMLDialogElement) {
  *
  * @remarks
  * The function is idempotent; subsequent calls on the same element update
- * the openedAt timestamp but do not re-attach listeners.
+ * the openedAt timestamp and stack order but do not re-attach listeners.
  *
  * Click handlers use event.timeStamp to ignore clicks that occurred before
  * the dialog was opened. This prevents the dialog from immediately closing
@@ -208,18 +246,23 @@ export function attachDialog(dialog: HTMLDialogElement): void {
     // which fires the close event but may be reopened in the same tick.
     const state = dialogStates.get(dialog)!;
     state.openedAt = performance.now();
+
+    // Update stack order: remove and re-add to ensure this dialog is topmost
+    activeDialogs.delete(dialog);
+    activeDialogs.add(dialog);
     return;
   }
 
   const state: DialogListeners = {
-    handleEscape: documentEscapeHandler,
     handleClick: createClickHandler(dialog),
     handleDocClick: createLightDismissHandler(dialog),
     handleCancel: createCancelHandler(dialog),
     handleClose: () => detachDialog(dialog),
-    attrObserver: new MutationObserver(() => {
-      /* intentionally empty: reactivity handled via getClosedByValue() */
-    }),
+    /**
+     * Timestamp when the dialog was opened.
+     * Uses performance.now() which shares the same time origin as event.timeStamp
+     * in modern browsers (DOMHighResTimeStamp).
+     */
     openedAt: performance.now(),
   };
 
@@ -229,11 +272,6 @@ export function attachDialog(dialog: HTMLDialogElement): void {
 
   // Capture phase to avoid stopPropagation() in frameworks
   document.addEventListener("click", state.handleDocClick, true);
-
-  state.attrObserver.observe(dialog, {
-    attributes: true,
-    attributeFilter: ["closedby"],
-  });
 
   activeDialogs.add(dialog);
   dialogStates.set(dialog, state);
@@ -252,7 +290,6 @@ export function detachDialog(dialog: HTMLDialogElement): void {
   dialog.removeEventListener("cancel", state.handleCancel);
   dialog.removeEventListener("close", state.handleClose);
   document.removeEventListener("click", state.handleDocClick, true);
-  state.attrObserver.disconnect();
 
   activeDialogs.delete(dialog);
   dialogStates.delete(dialog);

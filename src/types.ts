@@ -10,19 +10,12 @@
 export type ClosedBy = "any" | "closerequest" | "none";
 
 /**
- * Internal record that bundles together every handler and observer attached to
+ * Internal record that bundles together every handler attached to
  * a particular `<dialog>` element. Storing these in a {@link WeakMap} allows
  * for automatic garbage collection once the dialog node leaves the document
  * tree.
  */
 export interface DialogListeners {
-  /**
-   * Document-level `keydown` handler shared by all open modal dialogs. It is
-   * stored redundantly in every record so that we can remove it conditionally
-   * when the last dialog closes.
-   */
-  handleEscape: (event: KeyboardEvent) => void;
-
   /** Mouse click handler installed on the dialog element. */
   handleClick: (event: MouseEvent) => void;
 
@@ -36,16 +29,9 @@ export interface DialogListeners {
   handleClose: () => void;
 
   /**
-   * Attribute observer that tracks runtime changes to `closedby`. Each dialog
-   * owns its individual observer instance so that `disconnect()` can be called
-   * deterministically on `close()`.
-   */
-  attrObserver: MutationObserver;
-
-  /**
-   * Timestamp (from performance.now()) when the dialog was opened. Used to
-   * ignore click events that occurred before the dialog opened, preventing
-   * immediate dismissal when reopening a dialog.
+   * Timestamp when the dialog was opened.
+   * Uses performance.now() which shares the same time origin as event.timeStamp
+   * in modern browsers (DOMHighResTimeStamp).
    */
   openedAt: number;
 }

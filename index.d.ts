@@ -26,6 +26,15 @@ export function isPolyfilled(): boolean;
  */
 export function apply(): void;
 
+/**
+ * Tears down the polyfill, removing all event listeners and observers.
+ * After calling this function, the polyfill will no longer be active.
+ *
+ * Note: This does NOT restore the original `showModal`, `show`, or `closedBy`
+ * implementations on the prototype. It only cleans up observers and listeners.
+ */
+export function teardown(): void;
+
 declare global {
   interface HTMLDialogElement {
     closedBy: ClosedBy;

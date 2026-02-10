@@ -1,4 +1,10 @@
-import { attachDialog, detachDialog } from "./listeners.js";
+import { attachDialog, detachDialog, registerEscapeHandler, unregisterEscapeHandler, detachAllDialogs } from "./listeners.js";
+
+/** Stores all active MutationObservers for cleanup. */
+const observers = new Map<Document | ShadowRoot, MutationObserver>();
+
+/** Stores the original attachShadow method for restoration. */
+let originalAttachShadow: typeof HTMLElement.prototype.attachShadow | null = null;
 
 /**
  * Sets up a tree‑wide observer for a given {@link Document | ShadowRoot}. It
@@ -6,10 +12,12 @@ import { attachDialog, detachDialog } from "./listeners.js";
  *
  *  1. A *closedBy*‑decorated dialog is **added** → `attachDialog()`.
  *  2. Such a dialog is **removed** from the subtree → `detachDialog()`.
- *  3. The dialog’s `open` attribute flips while it remains in the tree
- *     (handled via patched `showModal` / `close`).
+ *  3. The dialog's `open` attribute flips while it remains in the tree
+ *     (handled via patched `showModal` / `show` / `close`).
  */
 export function observeRoot(root: Document | ShadowRoot): void {
+  // Avoid duplicate observers for the same root
+  if (observers.has(root)) return;
   /* Bootstrap existing instances */
   root.querySelectorAll("dialog[closedby]").forEach((d) => {
     if (d instanceof HTMLDialogElement && d.open) attachDialog(d);
@@ -43,7 +51,10 @@ export function observeRoot(root: Document | ShadowRoot): void {
   });
 
   const observedTarget = root === document ? document.body : root;
-  rootObserver.observe(observedTarget, { childList: true, subtree: true });
+  if (observedTarget) {
+    rootObserver.observe(observedTarget, { childList: true, subtree: true });
+    observers.set(root, rootObserver);
+  }
 }
 
 /** Recursively collects every ShadowRoot below a given element. */
@@ -56,22 +67,76 @@ function findShadowRoots(el: Element): ShadowRoot[] {
 }
 
 /**
- * Initializes observation for the document *and* all current / future
- * ShadowRoots. This is invoked once from {@link apply}.
+ * Patches `HTMLElement.prototype.attachShadow` to automatically observe
+ * new shadow roots for dialog elements.
  */
-export function setupObservers(): void {
-  observeRoot(document);
-
-  /* Existing ShadowRoots (static page load) */
-  if (document.body) findShadowRoots(document.body).forEach(observeRoot);
-
-  /* Future ShadowRoots created via attachShadow() */
-  const originalAttachShadow = HTMLElement.prototype.attachShadow;
+function patchAttachShadow(): void {
+  // Store original for potential restoration
+  originalAttachShadow = HTMLElement.prototype.attachShadow;
+  const cached = originalAttachShadow;
   HTMLElement.prototype.attachShadow = function attachShadowPatched(
     init: ShadowRootInit
   ): ShadowRoot {
-    const shadowRoot = originalAttachShadow.call(this, init);
+    const shadowRoot = cached.call(this, init);
     observeRoot(shadowRoot);
     return shadowRoot;
   };
+}
+
+/**
+ * Restores the original `attachShadow` method if it was patched.
+ */
+function unpatchAttachShadow(): void {
+  if (originalAttachShadow) {
+    HTMLElement.prototype.attachShadow = originalAttachShadow;
+    originalAttachShadow = null;
+  }
+}
+
+/**
+ * Initializes all observers after ensuring DOM is ready.
+ */
+function initializeObservers(): void {
+  // Register the global escape key handler
+  registerEscapeHandler();
+
+  // Observe the main document
+  observeRoot(document);
+
+  // Observe existing shadow roots (from static page load)
+  if (document.body) {
+    findShadowRoots(document.body).forEach(observeRoot);
+  }
+
+  // Patch attachShadow for future shadow roots
+  patchAttachShadow();
+}
+
+/**
+ * Initializes observation for the document *and* all current / future
+ * ShadowRoots. This is invoked once from {@link apply}.
+ *
+ * If `document.body` is not yet available (e.g., script in `<head>`),
+ * initialization is deferred until `DOMContentLoaded`.
+ */
+export function setupObservers(): void {
+  if (document.body) {
+    initializeObservers();
+  } else {
+    document.addEventListener("DOMContentLoaded", initializeObservers, {
+      once: true,
+    });
+  }
+}
+
+/**
+ * Disconnects all MutationObservers and restores the original `attachShadow`.
+ * This is called during polyfill teardown to clean up all observers.
+ */
+export function teardownObservers(): void {
+  observers.forEach((observer) => observer.disconnect());
+  observers.clear();
+  unpatchAttachShadow();
+  unregisterEscapeHandler();
+  detachAllDialogs();
 }

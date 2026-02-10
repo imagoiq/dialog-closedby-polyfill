@@ -1,36 +1,48 @@
 // src/listeners.ts
 var dialogStates = /* @__PURE__ */ new WeakMap();
 function getClosedByValue(dialog) {
-  const raw = dialog.getAttribute("closedby");
+  const raw = dialog.getAttribute("closedby")?.toLowerCase();
   return raw === "closerequest" || raw === "none" ? raw : "any";
 }
+function isClickInsideDialog(dialog, x, y) {
+  const rect = dialog.getBoundingClientRect();
+  return rect.top < y && y < rect.bottom && rect.left < x && x < rect.right;
+}
 function isTopMost(dialog) {
-  const stack = Array.from(activeDialogs);
-  return stack[stack.length - 1] === dialog;
+  return getTopMostDialog() === dialog;
+}
+function getTopMostDialog() {
+  let last;
+  for (const dialog of activeDialogs) {
+    last = dialog;
+  }
+  return last;
 }
 var activeDialogs = /* @__PURE__ */ new Set();
+var escapeHandlerRegistered = false;
 function documentEscapeHandler(event) {
   if (event.key !== "Escape" || activeDialogs.size === 0) return;
-  let shouldPreventDefault = false;
-  let hasClosableDialog = false;
-  const dialogsArray = Array.from(activeDialogs).reverse();
-  for (const dialog of dialogsArray) {
-    const closedBy = getClosedByValue(dialog);
-    if (closedBy === "none") {
-      shouldPreventDefault = true;
-      break;
-    }
-    if (closedBy === "any" || closedBy === "closerequest") {
-      dialog.close();
-      hasClosableDialog = true;
-      break;
-    }
-  }
-  if (shouldPreventDefault || hasClosableDialog) {
+  const topDialog = getTopMostDialog();
+  if (!topDialog) return;
+  const closedBy = getClosedByValue(topDialog);
+  if (closedBy === "none") {
     event.preventDefault();
   }
 }
-document.addEventListener("keydown", documentEscapeHandler);
+function registerEscapeHandler() {
+  if (escapeHandlerRegistered) return;
+  document.addEventListener("keydown", documentEscapeHandler);
+  escapeHandlerRegistered = true;
+}
+function unregisterEscapeHandler() {
+  if (!escapeHandlerRegistered) return;
+  document.removeEventListener("keydown", documentEscapeHandler);
+  escapeHandlerRegistered = false;
+}
+function detachAllDialogs() {
+  const dialogs = Array.from(activeDialogs);
+  dialogs.forEach(detachDialog);
+}
 function createLightDismissHandler(dialog) {
   return function handleDocumentClick(event) {
     const state = dialogStates.get(dialog);
@@ -42,10 +54,9 @@ function createLightDismissHandler(dialog) {
     if (!isTopMost(dialog) || getClosedByValue(dialog) !== "any" || !dialog.open) {
       return;
     }
-    const rect = dialog.getBoundingClientRect();
-    const { clientX: x, clientY: y } = event;
-    const inside = rect.top <= y && y <= rect.bottom && rect.left <= x && x <= rect.right;
-    if (!inside) dialog.close();
+    if (!isClickInsideDialog(dialog, event.clientX, event.clientY)) {
+      dialog.close();
+    }
   };
 }
 function createClickHandler(dialog) {
@@ -54,40 +65,42 @@ function createClickHandler(dialog) {
     if (state && event.timeStamp <= state.openedAt) return;
     if (event.target !== dialog) return;
     if (getClosedByValue(dialog) !== "any") return;
-    const rect = dialog.getBoundingClientRect();
-    const inside = rect.top < event.clientY && event.clientY < rect.bottom && rect.left < event.clientX && event.clientX < rect.right;
-    if (!inside) dialog.close();
+    if (!isClickInsideDialog(dialog, event.clientX, event.clientY)) {
+      dialog.close();
+    }
   };
 }
 function createCancelHandler(dialog) {
   return function handleCancel(event) {
-    if (getClosedByValue(dialog) === "none") event.preventDefault();
+    if (getClosedByValue(dialog) === "none") {
+      event.preventDefault();
+    }
   };
 }
 function attachDialog(dialog) {
   if (dialogStates.has(dialog)) {
     const state2 = dialogStates.get(dialog);
     state2.openedAt = performance.now();
+    activeDialogs.delete(dialog);
+    activeDialogs.add(dialog);
     return;
   }
   const state = {
-    handleEscape: documentEscapeHandler,
     handleClick: createClickHandler(dialog),
     handleDocClick: createLightDismissHandler(dialog),
     handleCancel: createCancelHandler(dialog),
     handleClose: () => detachDialog(dialog),
-    attrObserver: new MutationObserver(() => {
-    }),
+    /**
+     * Timestamp when the dialog was opened.
+     * Uses performance.now() which shares the same time origin as event.timeStamp
+     * in modern browsers (DOMHighResTimeStamp).
+     */
     openedAt: performance.now()
   };
   dialog.addEventListener("click", state.handleClick);
   dialog.addEventListener("cancel", state.handleCancel);
   dialog.addEventListener("close", state.handleClose);
   document.addEventListener("click", state.handleDocClick, true);
-  state.attrObserver.observe(dialog, {
-    attributes: true,
-    attributeFilter: ["closedby"]
-  });
   activeDialogs.add(dialog);
   dialogStates.set(dialog, state);
 }
@@ -98,13 +111,15 @@ function detachDialog(dialog) {
   dialog.removeEventListener("cancel", state.handleCancel);
   dialog.removeEventListener("close", state.handleClose);
   document.removeEventListener("click", state.handleDocClick, true);
-  state.attrObserver.disconnect();
   activeDialogs.delete(dialog);
   dialogStates.delete(dialog);
 }
 
 // src/observer.ts
+var observers = /* @__PURE__ */ new Map();
+var originalAttachShadow = null;
 function observeRoot(root) {
+  if (observers.has(root)) return;
   root.querySelectorAll("dialog[closedby]").forEach((d) => {
     if (d instanceof HTMLDialogElement && d.open) attachDialog(d);
   });
@@ -128,7 +143,10 @@ function observeRoot(root) {
     });
   });
   const observedTarget = root === document ? document.body : root;
-  rootObserver.observe(observedTarget, { childList: true, subtree: true });
+  if (observedTarget) {
+    rootObserver.observe(observedTarget, { childList: true, subtree: true });
+    observers.set(root, rootObserver);
+  }
 }
 function findShadowRoots(el) {
   const out = [];
@@ -137,15 +155,44 @@ function findShadowRoots(el) {
     out.push(...findShadowRoots(child));
   return out;
 }
-function setupObservers() {
-  observeRoot(document);
-  if (document.body) findShadowRoots(document.body).forEach(observeRoot);
-  const originalAttachShadow = HTMLElement.prototype.attachShadow;
+function patchAttachShadow() {
+  originalAttachShadow = HTMLElement.prototype.attachShadow;
+  const cached = originalAttachShadow;
   HTMLElement.prototype.attachShadow = function attachShadowPatched(init) {
-    const shadowRoot = originalAttachShadow.call(this, init);
+    const shadowRoot = cached.call(this, init);
     observeRoot(shadowRoot);
     return shadowRoot;
   };
+}
+function unpatchAttachShadow() {
+  if (originalAttachShadow) {
+    HTMLElement.prototype.attachShadow = originalAttachShadow;
+    originalAttachShadow = null;
+  }
+}
+function initializeObservers() {
+  registerEscapeHandler();
+  observeRoot(document);
+  if (document.body) {
+    findShadowRoots(document.body).forEach(observeRoot);
+  }
+  patchAttachShadow();
+}
+function setupObservers() {
+  if (document.body) {
+    initializeObservers();
+  } else {
+    document.addEventListener("DOMContentLoaded", initializeObservers, {
+      once: true
+    });
+  }
+}
+function teardownObservers() {
+  observers.forEach((observer) => observer.disconnect());
+  observers.clear();
+  unpatchAttachShadow();
+  unregisterEscapeHandler();
+  detachAllDialogs();
 }
 
 // src/index.ts
@@ -169,7 +216,6 @@ function isPolyfilled() {
   return polyfilled;
 }
 function apply() {
-  "use strict";
   if (polyfilled || isSupported()) return;
   if (!("showModal" in HTMLDialogElement.prototype)) {
     console.warn(
@@ -178,14 +224,20 @@ function apply() {
     return;
   }
   const originalShowModal = HTMLDialogElement.prototype.showModal;
+  const originalShow = HTMLDialogElement.prototype.show;
   HTMLDialogElement.prototype.showModal = function showModalPatched() {
     originalShowModal.call(this);
     if (!this.open) return;
     if (this.hasAttribute("closedby")) attachDialog(this);
   };
+  HTMLDialogElement.prototype.show = function showPatched() {
+    originalShow.call(this);
+    if (!this.open) return;
+    if (this.hasAttribute("closedby")) attachDialog(this);
+  };
   Object.defineProperty(HTMLDialogElement.prototype, "closedBy", {
     get() {
-      const v = this.getAttribute("closedby");
+      const v = this.getAttribute("closedby")?.toLowerCase();
       return v === "closerequest" || v === "none" ? v : "any";
     },
     set(value) {
@@ -198,9 +250,7 @@ function apply() {
         this.setAttribute("closedby", "any");
       }
       if (this.open) {
-        if (this.hasAttribute("closedby")) {
-          attachDialog(this);
-        }
+        attachDialog(this);
       }
     },
     enumerable: true,
@@ -209,9 +259,15 @@ function apply() {
   setupObservers();
   polyfilled = true;
 }
+function teardown() {
+  if (!polyfilled) return;
+  teardownObservers();
+  polyfilled = false;
+}
 if (!isSupported()) apply();
 export {
   apply,
   isPolyfilled,
-  isSupported
+  isSupported,
+  teardown
 };

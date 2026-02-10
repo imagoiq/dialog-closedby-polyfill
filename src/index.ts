@@ -1,4 +1,4 @@
-import { setupObservers } from "./observer.js";
+import { setupObservers, teardownObservers } from "./observer.js";
 import { attachDialog } from "./listeners.js";
 import { ClosedBy } from "./types.js";
 
@@ -46,9 +46,9 @@ export function isSupported(): boolean {
   // attribute. Safari 26.2 exposes `closedBy` on the prototype but the
   // getter does not return the expected value.
   try {
-    const testDialog = document.createElement("dialog") as HTMLDialogElement;
+    const testDialog = document.createElement("dialog");
     testDialog.setAttribute("closedby", "none");
-    return (testDialog as any).closedBy === "none";
+    return (testDialog as HTMLDialogElement & { closedBy?: string }).closedBy === "none";
   } catch {
     // If anything goes wrong during the behavioural check, treat the
     // feature as unsupported rather than throwing at import time.
@@ -71,8 +71,6 @@ export function isPolyfilled(): boolean {
  * well.
  */
 export function apply(): void {
-  "use strict"; // eslint-disable-line strict
-
   if (polyfilled || isSupported()) return;
 
   // Older WebKit versions ship *no* <dialog> implementation at all. Abort early
@@ -84,8 +82,9 @@ export function apply(): void {
     return;
   }
 
-  /* Cache original method */
+  /* Cache original methods */
   const originalShowModal = HTMLDialogElement.prototype.showModal;
+  const originalShow = HTMLDialogElement.prototype.show;
 
   /**
    * Monkey‑patch {@link HTMLDialogElement.showModal} so that event listeners
@@ -102,6 +101,19 @@ export function apply(): void {
   };
 
   /**
+   * Monkey‑patch {@link HTMLDialogElement.show} so that event listeners
+   * are wired up for modeless dialogs as well.
+   */
+  HTMLDialogElement.prototype.show = function showPatched(): void {
+    originalShow.call(this);
+
+    // Guard: <dialog> could be detached from DOM – `.open` would be false.
+    if (!this.open) return;
+
+    if (this.hasAttribute("closedby")) attachDialog(this);
+  };
+
+  /**
    * Defines the JavaScript property counterpart for the `closedby` content
    * attribute. Reads return the normalized {@link ClosedBy} semantic. Writes
    * update the underlying attribute **and** synchronize listeners in real
@@ -109,7 +121,7 @@ export function apply(): void {
    */
   Object.defineProperty(HTMLDialogElement.prototype, "closedBy", {
     get(): ClosedBy {
-      const v = this.getAttribute("closedby");
+      const v = this.getAttribute("closedby")?.toLowerCase();
       return v === "closerequest" || v === "none" ? v : "any";
     },
     set(value: ClosedBy) {
@@ -124,9 +136,7 @@ export function apply(): void {
 
       // Keep listeners in sync with the current open state
       if (this.open) {
-        if (this.hasAttribute("closedby")) {
-          attachDialog(this);
-        }
+        attachDialog(this);
       }
     },
     enumerable: true,
@@ -137,6 +147,19 @@ export function apply(): void {
   setupObservers();
 
   polyfilled = true;
+}
+
+/**
+ * Tears down the polyfill, removing all event listeners and observers.
+ * After calling this function, the polyfill will no longer be active.
+ *
+ * Note: This does NOT restore the original `showModal`, `show`, or `closedBy`
+ * implementations on the prototype. It only cleans up observers and listeners.
+ */
+export function teardown(): void {
+  if (!polyfilled) return;
+  teardownObservers();
+  polyfilled = false;
 }
 
 /* -------------------------------------------------------------------------- */
