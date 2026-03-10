@@ -138,6 +138,14 @@ function observeRoot(root) {
           });
         }
       });
+      mutations.forEach(async (m2) => {
+        if (m2.attributeName === "open") {
+          const node = m2.target;
+          if (node instanceof HTMLDialogElement && node.open && node.hasAttribute("closedby")) {
+            attachDialog(node);
+          }
+        }
+      });
       m.removedNodes.forEach((node) => {
         if (node instanceof HTMLDialogElement) detachDialog(node);
         if (node instanceof Element)
@@ -147,7 +155,7 @@ function observeRoot(root) {
   });
   const observedTarget = root === document ? document.body : root;
   if (observedTarget) {
-    rootObserver.observe(observedTarget, { childList: true, subtree: true });
+    rootObserver.observe(observedTarget, { childList: true, subtree: true, attributes: true, attributeFilter: ["open"] });
     observers.set(root, rootObserver);
   }
 }
