@@ -209,7 +209,6 @@ function isSupported() {
   }
   try {
     const testDialog = document.createElement("dialog");
-    testDialog.setAttribute("closedby", "none");
     return testDialog.closedBy === "none";
   } catch {
     return false;
